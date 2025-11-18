@@ -5,12 +5,16 @@ import io
 import time
 import threading
 import sqlite3
+import json
+import csv
 from datetime import datetime
-from flask import Flask, request, jsonify, send_file, render_template
+from flask import Flask, request, jsonify, send_file, render_template, send_from_directory
 from flask_cors import CORS
 from diffusers import StableDiffusionPipeline
 from PIL import Image, ImageDraw, ImageFont
 import logging
+import zipfile
+from pathlib import Path
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -21,7 +25,7 @@ CORS(app)
 
 # Configuration
 class Config:
-    HF_TOKEN = os.environ.get('HF_TOKEN', 'hf_**************************')
+    HF_TOKEN = os.environ.get('HF_TOKEN', 'hf_*****************************')
     
     # Available models (tested and working)
     MODELS = {
@@ -76,9 +80,15 @@ class Config:
     }
     
     UPLOAD_FOLDER = "generated_images"
+    METADATA_FOLDER = "image_metadata"
+    EXPORT_FOLDER = "exports"
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024
     CACHE_DIR = "./model_cache"
     DATABASE_PATH = "./ai_images.db"
+    
+    # Supported export formats
+    SUPPORTED_FORMATS = ['PNG', 'JPEG', 'WEBP']
+    DEFAULT_QUALITY = 95
 
 app.config.from_object(Config)
 
@@ -99,6 +109,7 @@ def init_database():
             CREATE TABLE IF NOT EXISTS generated_images (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 filename TEXT NOT NULL,
+                filepath TEXT NOT NULL,
                 prompt TEXT NOT NULL,
                 enhanced_prompt TEXT NOT NULL,
                 model_used TEXT NOT NULL,
@@ -108,6 +119,8 @@ def init_database():
                 image_width INTEGER NOT NULL,
                 image_height INTEGER NOT NULL,
                 file_size INTEGER NOT NULL,
+                format_used TEXT NOT NULL,
+                quality INTEGER NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -120,6 +133,19 @@ def init_database():
                 model_size TEXT NOT NULL,
                 download_time REAL NOT NULL,
                 downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        # Create exports table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS exports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                export_type TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                filepath TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                item_count INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -138,11 +164,13 @@ def save_generation_record(image_data):
         
         cursor.execute('''
             INSERT INTO generated_images (
-                filename, prompt, enhanced_prompt, model_used, style, 
-                negative_prompt, generation_time, image_width, image_height, file_size
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                filename, filepath, prompt, enhanced_prompt, model_used, style, 
+                negative_prompt, generation_time, image_width, image_height, 
+                file_size, format_used, quality
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             image_data['filename'],
+            image_data['filepath'],
             image_data['prompt'],
             image_data['enhanced_prompt'],
             image_data['model_used'],
@@ -151,7 +179,9 @@ def save_generation_record(image_data):
             image_data['generation_time'],
             image_data['image_width'],
             image_data['image_height'],
-            image_data['file_size']
+            image_data['file_size'],
+            image_data['format_used'],
+            image_data['quality']
         ))
         
         conn.commit()
@@ -164,6 +194,30 @@ def save_generation_record(image_data):
     except Exception as e:
         print(f"❌ Error saving to database: {e}")
         return None
+
+def save_export_record(export_data):
+    """Save export record to database"""
+    try:
+        conn = sqlite3.connect(Config.DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            INSERT INTO exports (export_type, filename, filepath, file_size, item_count)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (
+            export_data['export_type'],
+            export_data['filename'],
+            export_data['filepath'],
+            export_data['file_size'],
+            export_data['item_count']
+        ))
+        
+        conn.commit()
+        conn.close()
+        print(f"💾 Saved export record for {export_data['filename']}")
+        
+    except Exception as e:
+        print(f"❌ Error saving export record: {e}")
 
 def save_download_record(model_name, model_size, download_time):
     """Save model download record to database"""
@@ -214,12 +268,17 @@ def get_generation_stats():
         ''')
         recent_generations = cursor.fetchone()[0]
         
+        # Total storage used
+        cursor.execute('SELECT SUM(file_size) FROM generated_images')
+        total_storage = cursor.fetchone()[0] or 0
+        
         conn.close()
         
         stats = {
             'total_generations': total_generations,
             'avg_generation_time': round(avg_generation_time, 2) if avg_generation_time else 0,
-            'recent_generations': recent_generations
+            'recent_generations': recent_generations,
+            'total_storage_mb': round(total_storage / (1024 * 1024), 2)
         }
         
         if most_used_model:
@@ -241,7 +300,7 @@ def get_recent_generations(limit=10):
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT filename, prompt, model_used, style, generation_time, created_at
+            SELECT filename, prompt, model_used, style, generation_time, created_at, file_size
             FROM generated_images 
             ORDER BY created_at DESC 
             LIMIT ?
@@ -256,11 +315,33 @@ def get_recent_generations(limit=10):
             'model_used': row[2],
             'style': row[3],
             'generation_time': round(row[4], 2),
-            'created_at': row[5]
+            'created_at': row[5],
+            'file_size_mb': round(row[6] / (1024 * 1024), 2)
         } for row in generations]
         
     except Exception as e:
         print(f"❌ Error getting recent generations: {e}")
+        return []
+
+def get_all_generations():
+    """Get all generations for export"""
+    try:
+        conn = sqlite3.connect(Config.DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT * FROM generated_images 
+            ORDER BY created_at DESC
+        ''')
+        
+        columns = [column[0] for column in cursor.description]
+        generations = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        conn.close()
+        
+        return generations
+        
+    except Exception as e:
+        print(f"❌ Error getting all generations: {e}")
         return []
 
 # Initialize database on startup
@@ -347,7 +428,7 @@ def download_model(model_key):
 def add_watermark(image):
     """Add watermark to image"""
     draw = ImageDraw.Draw(image)
-    watermark_text = "AI Generated"
+    watermark_text = "AI Generated - Magic Canvas Pro"
     
     try:
         font = ImageFont.truetype("arial.ttf", 20)
@@ -408,6 +489,121 @@ def filter_inappropriate_content(prompt):
             return False, f"Prompt contains inappropriate content"
     
     return True, "Prompt is appropriate"
+
+def save_image_metadata(image_data, filename):
+    """Save image metadata to JSON file"""
+    try:
+        metadata = {
+            'filename': filename,
+            'prompt': image_data['prompt'],
+            'enhanced_prompt': image_data['enhanced_prompt'],
+            'model_used': image_data['model_used'],
+            'style': image_data['style'],
+            'negative_prompt': image_data.get('negative_prompt', ''),
+            'generation_time': image_data['generation_time'],
+            'image_width': image_data['image_width'],
+            'image_height': image_data['image_height'],
+            'file_size': image_data['file_size'],
+            'format_used': image_data['format_used'],
+            'quality': image_data['quality'],
+            'created_at': datetime.now().isoformat()
+        }
+        
+        metadata_filename = f"{Path(filename).stem}_metadata.json"
+        metadata_path = os.path.join(Config.METADATA_FOLDER, metadata_filename)
+        
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        return metadata_path
+    except Exception as e:
+        print(f"❌ Error saving metadata: {e}")
+        return None
+
+def create_export_zip(images_data, export_format, quality=95):
+    """Create a ZIP file with exported images and metadata"""
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_filename = f"ai_images_export_{timestamp}.zip"
+        zip_path = os.path.join(Config.EXPORT_FOLDER, zip_filename)
+        
+        os.makedirs(Config.EXPORT_FOLDER, exist_ok=True)
+        
+        with zipfile.ZipFile(zip_path, 'w') as zipf:
+            # Add images
+            for img_data in images_data:
+                original_path = img_data['filepath']
+                if os.path.exists(original_path):
+                    # Convert to desired format if needed
+                    if export_format.upper() != 'PNG':
+                        img = Image.open(original_path)
+                        converted_filename = f"{Path(img_data['filename']).stem}.{export_format.lower()}"
+                        converted_path = os.path.join(Config.EXPORT_FOLDER, converted_filename)
+                        
+                        if export_format.upper() == 'JPEG':
+                            img = img.convert('RGB')  # JPEG doesn't support transparency
+                        
+                        img.save(converted_path, format=export_format.upper(), quality=quality)
+                        zipf.write(converted_path, converted_filename)
+                        os.remove(converted_path)  # Clean up temporary file
+                    else:
+                        zipf.write(original_path, img_data['filename'])
+            
+            # Add metadata CSV
+            metadata_csv = os.path.join(Config.EXPORT_FOLDER, f"metadata_{timestamp}.csv")
+            with open(metadata_csv, 'w', newline='') as csvfile:
+                fieldnames = ['filename', 'prompt', 'model_used', 'style', 'generation_time', 'created_at']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                for img_data in images_data:
+                    writer.writerow({
+                        'filename': img_data['filename'],
+                        'prompt': img_data['prompt'],
+                        'model_used': img_data['model_used'],
+                        'style': img_data['style'],
+                        'generation_time': img_data['generation_time'],
+                        'created_at': img_data['created_at']
+                    })
+            
+            zipf.write(metadata_csv, f"metadata_{timestamp}.csv")
+            os.remove(metadata_csv)  # Clean up temporary file
+            
+            # Add README
+            readme_content = f"""AI Image Generator Export
+Generated on: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+Total Images: {len(images_data)}
+Export Format: {export_format}
+Quality: {quality}
+
+This archive contains:
+- Generated images in {export_format} format
+- Metadata CSV file with generation details
+
+Created with Magic Canvas Pro AI Image Generator
+"""
+            readme_path = os.path.join(Config.EXPORT_FOLDER, "README.txt")
+            with open(readme_path, 'w') as f:
+                f.write(readme_content)
+            zipf.write(readme_path, "README.txt")
+            os.remove(readme_path)
+        
+        file_size = os.path.getsize(zip_path)
+        
+        # Save export record
+        export_data = {
+            'export_type': f'zip_{export_format}',
+            'filename': zip_filename,
+            'filepath': zip_path,
+            'file_size': file_size,
+            'item_count': len(images_data)
+        }
+        save_export_record(export_data)
+        
+        return zip_path, zip_filename, file_size
+        
+    except Exception as e:
+        print(f"❌ Error creating export ZIP: {e}")
+        return None, None, 0
 
 # Routes
 @app.route('/')
@@ -470,6 +666,8 @@ def generate_image():
         model_key = data.get('model', 'tiny')
         style = data.get('style', 'photorealistic')
         negative_prompt = data.get('negative_prompt', '')
+        export_format = data.get('format', 'PNG').upper()
+        quality = data.get('quality', 95)
         
         # Validate input
         if not prompt:
@@ -477,6 +675,9 @@ def generate_image():
         
         if len(prompt) > 500:
             return jsonify({"error": "Prompt too long. Maximum 500 characters"}), 400
+        
+        if export_format not in Config.SUPPORTED_FORMATS:
+            return jsonify({"error": f"Unsupported format. Choose from: {', '.join(Config.SUPPORTED_FORMATS)}"}), 400
         
         # Check if model is loaded
         if model_key not in loaded_models:
@@ -517,24 +718,29 @@ def generate_image():
         image = images[0]
         image = add_watermark(image)
         
-        # Convert to base64
-        buffered = io.BytesIO()
-        image.save(buffered, format="PNG", quality=95)
-        img_str = base64.b64encode(buffered.getvalue()).decode()
-        
-        # Save to file
+        # Save image in specified format
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"ai_image_{timestamp}.png"
+        filename = f"ai_image_{timestamp}.{export_format.lower()}"
         filepath = os.path.join(Config.UPLOAD_FOLDER, filename)
         os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
-        image.save(filepath, "PNG")
+        
+        if export_format == 'JPEG':
+            image = image.convert('RGB')  # JPEG doesn't support transparency
+        
+        image.save(filepath, format=export_format, quality=quality)
         
         # Get file size
         file_size = os.path.getsize(filepath)
         
+        # Convert to base64 for response
+        buffered = io.BytesIO()
+        image.save(buffered, format=export_format, quality=quality)
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+        
         # Prepare data for database
         image_data = {
             'filename': filename,
+            'filepath': filepath,
             'prompt': prompt,
             'enhanced_prompt': enhanced_prompt,
             'model_used': model_key,
@@ -543,42 +749,230 @@ def generate_image():
             'generation_time': generation_time,
             'image_width': image.width,
             'image_height': image.height,
-            'file_size': file_size
+            'file_size': file_size,
+            'format_used': export_format,
+            'quality': quality
         }
         
         # Save to database
         record_id = save_generation_record(image_data)
         
+        # Save metadata file
+        metadata_path = save_image_metadata(image_data, filename)
+        
         return jsonify({
             "success": True,
             "images": [{
-                "data": f"data:image/png;base64,{img_str}",
+                "data": f"data:image/{export_format.lower()};base64,{img_str}",
                 "filename": filename,
                 "prompt": prompt,
                 "model": model_key,
                 "style": style,
-                "generation_time": round(generation_time, 2)
+                "generation_time": round(generation_time, 2),
+                "format": export_format,
+                "quality": quality
             }],
             "generation_time": generation_time,
             "enhanced_prompt": enhanced_prompt,
             "model_used": model_key,
-            "record_id": record_id
+            "record_id": record_id,
+            "metadata_saved": metadata_path is not None
         })
         
     except Exception as e:
         logger.error(f"Generation error: {str(e)}")
         return jsonify({"error": f"Generation failed: {str(e)}"}), 500
 
+@app.route('/api/export', methods=['POST'])
+def export_images():
+    """Export multiple images with metadata"""
+    try:
+        data = request.json
+        export_format = data.get('format', 'PNG').upper()
+        quality = data.get('quality', 95)
+        include_metadata = data.get('include_metadata', True)
+        
+        if export_format not in Config.SUPPORTED_FORMATS:
+            return jsonify({"error": f"Unsupported format. Choose from: {', '.join(Config.SUPPORTED_FORMATS)}"}), 400
+        
+        # Get all generations for export
+        generations = get_all_generations()
+        
+        if not generations:
+            return jsonify({"error": "No images to export"}), 400
+        
+        # Create ZIP export
+        zip_path, zip_filename, file_size = create_export_zip(generations, export_format, quality)
+        
+        if not zip_path:
+            return jsonify({"error": "Failed to create export file"}), 500
+        
+        return jsonify({
+            "success": True,
+            "export_file": zip_filename,
+            "file_size": file_size,
+            "item_count": len(generations),
+            "format": export_format
+        })
+        
+    except Exception as e:
+        logger.error(f"Export error: {str(e)}")
+        return jsonify({"error": f"Export failed: {str(e)}"}), 500
+
+@app.route('/api/export/<filename>')
+def download_export(filename):
+    """Download export file"""
+    try:
+        return send_file(
+            os.path.join(Config.EXPORT_FOLDER, filename),
+            as_attachment=True,
+            download_name=filename
+        )
+    except FileNotFoundError:
+        return jsonify({"error": "Export file not found"}), 404
+
+@app.route('/api/images')
+def list_images():
+    """Get paginated list of all images"""
+    try:
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 20, type=int)
+        
+        conn = sqlite3.connect(Config.DATABASE_PATH)
+        cursor = conn.cursor()
+        
+        # Get total count
+        cursor.execute('SELECT COUNT(*) FROM generated_images')
+        total = cursor.fetchone()[0]
+        
+        # Get paginated results
+        offset = (page - 1) * per_page
+        cursor.execute('''
+            SELECT filename, prompt, model_used, style, generation_time, created_at, file_size
+            FROM generated_images 
+            ORDER BY created_at DESC 
+            LIMIT ? OFFSET ?
+        ''', (per_page, offset))
+        
+        images = cursor.fetchall()
+        conn.close()
+        
+        result = {
+            'images': [{
+                'filename': row[0],
+                'prompt': row[1],
+                'model_used': row[2],
+                'style': row[3],
+                'generation_time': round(row[4], 2),
+                'created_at': row[5],
+                'file_size_mb': round(row[6] / (1024 * 1024), 2)
+            } for row in images],
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': total,
+                'pages': (total + per_page - 1) // per_page
+            }
+        }
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logger.error(f"List images error: {str(e)}")
+        return jsonify({"error": f"Failed to list images: {str(e)}"}), 500
+
+@app.route('/api/images/<filename>/metadata')
+def get_image_metadata(filename):
+    """Get metadata for a specific image"""
+    try:
+        metadata_filename = f"{Path(filename).stem}_metadata.json"
+        metadata_path = os.path.join(Config.METADATA_FOLDER, metadata_filename)
+        
+        if os.path.exists(metadata_path):
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+            return jsonify(metadata)
+        else:
+            return jsonify({"error": "Metadata not found"}), 404
+            
+    except Exception as e:
+        logger.error(f"Metadata error: {str(e)}")
+        return jsonify({"error": f"Failed to get metadata: {str(e)}"}), 500
+
+@app.route('/api/system/cleanup', methods=['POST'])
+def cleanup_system():
+    """Clean up temporary files and optimize system"""
+    try:
+        data = request.json
+        delete_old = data.get('delete_old', False)
+        days_old = data.get('days_old', 30)
+        
+        cleanup_report = {
+            'deleted_files': 0,
+            'freed_space': 0,
+            'errors': []
+        }
+        
+        if delete_old:
+            # Delete files older than specified days
+            cutoff_time = time.time() - (days_old * 24 * 60 * 60)
+            
+            for folder in [Config.UPLOAD_FOLDER, Config.EXPORT_FOLDER, Config.METADATA_FOLDER]:
+                if os.path.exists(folder):
+                    for filename in os.listdir(folder):
+                        filepath = os.path.join(folder, filename)
+                        if os.path.isfile(filepath):
+                            if os.path.getctime(filepath) < cutoff_time:
+                                try:
+                                    file_size = os.path.getsize(filepath)
+                                    os.remove(filepath)
+                                    cleanup_report['deleted_files'] += 1
+                                    cleanup_report['freed_space'] += file_size
+                                except Exception as e:
+                                    cleanup_report['errors'].append(f"Failed to delete {filename}: {str(e)}")
+        
+        cleanup_report['freed_space_mb'] = round(cleanup_report['freed_space'] / (1024 * 1024), 2)
+        
+        return jsonify({
+            "success": True,
+            "cleanup_report": cleanup_report
+        })
+        
+    except Exception as e:
+        logger.error(f"Cleanup error: {str(e)}")
+        return jsonify({"error": f"Cleanup failed: {str(e)}"}), 500
+
 @app.route('/api/system_info')
 def system_info():
     stats = get_generation_stats()
+    
+    # Get folder sizes
+    def get_folder_size(folder):
+        if not os.path.exists(folder):
+            return 0
+        total_size = 0
+        for dirpath, dirnames, filenames in os.walk(folder):
+            for filename in filenames:
+                filepath = os.path.join(dirpath, filename)
+                total_size += os.path.getsize(filepath)
+        return total_size
+    
+    folder_sizes = {
+        'images_mb': round(get_folder_size(Config.UPLOAD_FOLDER) / (1024 * 1024), 2),
+        'exports_mb': round(get_folder_size(Config.EXPORT_FOLDER) / (1024 * 1024), 2),
+        'metadata_mb': round(get_folder_size(Config.METADATA_FOLDER) / (1024 * 1024), 2),
+        'cache_mb': round(get_folder_size(Config.CACHE_DIR) / (1024 * 1024), 2)
+    }
+    
     return jsonify({
         "device": "cpu",
         "loaded_models": list(loaded_models.keys()),
         "total_models": len(Config.MODELS),
         "cache_dir": Config.CACHE_DIR,
         "database_path": Config.DATABASE_PATH,
-        "statistics": stats
+        "statistics": stats,
+        "storage_usage": folder_sizes,
+        "supported_formats": Config.SUPPORTED_FORMATS
     })
 
 @app.route('/api/download/<filename>')
@@ -599,24 +993,28 @@ def health_check():
 if __name__ == '__main__':
     # Create directories
     os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
+    os.makedirs(Config.METADATA_FOLDER, exist_ok=True)
+    os.makedirs(Config.EXPORT_FOLDER, exist_ok=True)
     os.makedirs(Config.CACHE_DIR, exist_ok=True)
     
     # Initialize database
     init_database()
     
     print("=" * 70)
-    print("🚀 AI Image Generator Pro - WITH DATABASE & ANALYTICS")
+    print("🚀 AI Image Generator Pro - WITH STORAGE & EXPORT SYSTEM")
     print("=" * 70)
-    print("📊 New Features:")
-    print("   • SQLite database for storing generation history")
-    print("   • Real-time statistics dashboard")
-    print("   • Recent generations tracking")
-    print("   • Model download analytics")
+    print("📊 Enhanced Features:")
+    print("   • Multi-format export (PNG, JPEG, WEBP)")
+    print("   • Metadata storage (JSON + CSV)")
+    print("   • Batch export with ZIP downloads")
+    print("   • Storage management and cleanup")
+    print("   • Image gallery with pagination")
     print("=" * 70)
-    print("💡 Database Features:")
-    print("   • Store prompts, models, styles, and generation times")
-    print("   • Track file sizes and image dimensions")
-    print("   • View statistics and analytics")
+    print("💡 Storage Features:")
+    print("   • Organized folder structure")
+    print("   • Metadata preservation")
+    print("   • Export with quality control")
+    print("   • System cleanup tools")
     print("=" * 70)
     print("🌐 Open http://localhost:5000 in your browser")
     print("=" * 70)
