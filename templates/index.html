@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Image Generator | Magic Canvas Pro</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <!-- Intro Animation Screen -->
+    <div class="intro-screen" id="introScreen">
+        <div class="intro-content">
+            <div class="logo-animation">
+                <span class="magic-wand">✨</span>
+                <span class="paint-brush">🎨</span>
+                <span class="sparkles">🌟</span>
+            </div>
+            <h1 class="intro-title">Magic Canvas Pro</h1>
+            <p class="intro-subtitle">Transforming Imagination into Reality</p>
+            <div class="loading-bar">
+                <div class="loading-progress"></div>
+            </div>
+            <div class="loading-text">Loading amazing AI experiences...</div>
+        </div>
+    </div>
+
+    <!-- Main App Content -->
+    <div class="container" id="mainApp">
+        <!-- Header -->
+        <div class="header fade-in">
+            <h1>🎨 Magic Canvas Pro</h1>
+            <p>Transform your imagination into stunning AI-generated masterpieces</p>
+            <div style="color: var(--text-secondary); font-size: 1rem;">
+                Choose from 6 AI models • Database tracking • Analytics dashboard
+            </div>
+        </div>
+
+        <!-- Statistics Section -->
+        <div class="stats-section fade-in">
+            <h2 class="section-title">📊 Generation Statistics</h2>
+            <div class="stats-grid" id="statsGrid">
+                <div class="stat-card">
+                    <div class="stat-value" id="totalGenerations">0</div>
+                    <div class="stat-label">Total Generations</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="avgGenerationTime">0s</div>
+                    <div class="stat-label">Average Time</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="recentGenerations">0</div>
+                    <div class="stat-label">Last 24 Hours</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="popularModel">-</div>
+                    <div class="stat-label">Popular Model</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Model Selection -->
+        <div class="model-section fade-in">
+            <h2 class="section-title">🚀 Choose Your AI Model</h2>
+            <div class="model-grid" id="modelGrid">
+                <!-- Models will be loaded here -->
+            </div>
+        </div>
+
+        <!-- Download Progress -->
+        <div id="downloadSection" class="download-section hidden">
+            <h3 style="text-align: center; margin-bottom: 15px;">📥 Downloading Model</h3>
+            <div class="progress-bar">
+                <div id="downloadProgress" class="progress-fill" style="width: 0%"></div>
+            </div>
+            <div id="downloadStatus" class="download-status">Starting download...</div>
+        </div>
+
+        <!-- Generation Form -->
+        <div class="generation-section fade-in">
+            <h2 class="section-title">✨ Create Your Masterpiece</h2>
+            <div class="form-group">
+                <label for="prompt">Describe your vision in detail:</label>
+                <textarea 
+                    id="prompt" 
+                    placeholder="Example: A majestic dragon flying over a medieval castle at sunset with vibrant colors, highly detailed fantasy art, cinematic lighting..."
+                    maxlength="500"
+                ></textarea>
+                <div class="char-count">
+                    <span id="charCount">0</span>/500 characters
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="style">🎨 Art Style</label>
+                    <select id="style">
+                        <option value="photorealistic">Photorealistic</option>
+                        <option value="artistic">Artistic Painting</option>
+                        <option value="cartoon">Cartoon Style</option>
+                        <option value="anime">Anime/Manga</option>
+                        <option value="digital_art">Digital Art</option>
+                        <option value="fantasy">Fantasy</option>
+                        <option value="sci-fi">Sci-Fi/Cyberpunk</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="negativePrompt">🚫 Exclude These (Negative Prompt)</label>
+                    <input 
+                        type="text" 
+                        id="negativePrompt" 
+                        placeholder="blurry, low quality, distorted, ugly, bad anatomy..."
+                    >
+                </div>
+            </div>
+
+            <button id="generateBtn" class="generate-btn" disabled>
+                🎯 Select a Model First to Generate
+            </button>
+        </div>
+
+        <!-- Results Section -->
+        <div id="resultsSection" class="results-section hidden">
+            <h2 class="section-title">🎉 Your Creation</h2>
+            <div id="generationInfo" class="generation-info"></div>
+            <div id="imagesGrid" class="images-container"></div>
+        </div>
+
+        <!-- Recent Generations -->
+        <div class="recent-generations fade-in">
+            <h2 class="section-title">📝 Recent Generations</h2>
+            <div class="generation-list" id="recentGenerationsList">
+                <!-- Recent generations will be loaded here -->
+            </div>
+        </div>
+
+        <!-- Error Section -->
+        <div id="errorSection" class="error-section hidden">
+            <div id="errorMessage"></div>
+        </div>
+
+        <!-- Image Modal -->
+        <div class="image-modal" id="imageModal">
+            <div class="modal-content">
+                <button class="modal-close" onclick="closeModal()">×</button>
+                <img id="modalImage" class="modal-image" src="" alt="Full size preview">
+                <div class="modal-actions">
+                    <button class="download-btn" onclick="downloadModalImage()">
+                        💾 Download Image
+                    </button>
+                    <button class="view-btn" onclick="closeModal()">
+                        ← Back to Gallery
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tips Section -->
+        <div class="tips-section fade-in">
+            <h3 class="section-title">💡 Pro Tips for Better Results</h3>
+            <div class="tips-grid">
+                <div class="tip-card">
+                    <strong>Be Specific & Detailed</strong>
+                    <p>Describe colors, lighting, style, composition, and mood for best results</p>
+                </div>
+                <div class="tip-card">
+                    <strong>Start with Fast Models</strong>
+                    <p>Use Mini-SD or Tiny models for quick testing before larger models</p>
+                </div>
+                <div class="tip-card">
+                    <strong>Use Negative Prompts</strong>
+                    <p>Exclude unwanted elements like "blurry", "low quality", "distorted"</p>
+                </div>
+                <div class="tip-card">
+                    <strong>Experiment with Styles</strong>
+                    <p>Try different art styles to see which works best for your vision</p>
+                </div>
+                <div class="tip-card">
+                    <strong>Portrait Model</strong>
+                    <p>Use Portrait+ model for amazing people and character images</p>
+                </div>
+                <div class="tip-card">
+                    <strong>Track Your Progress</strong>
+                    <p>View statistics and recent generations in the analytics dashboard</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>

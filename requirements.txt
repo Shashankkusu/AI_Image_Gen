@@ -1,0 +1,8 @@
+flask
+flask-cors
+torch
+diffusers
+transformers
+accelerate
+pillow
+python-dotenv
