@@ -3,6 +3,8 @@ class MagicCanvasPro {
         this.selectedModel = null;
         this.models = {};
         this.currentModalImage = null;
+        this.currentPage = 1;
+        this.totalPages = 1;
         this.initializeApp();
     }
 
@@ -13,6 +15,7 @@ class MagicCanvasPro {
         // Load models, stats and initialize the app
         await this.loadModels();
         await this.loadStats();
+        await this.loadStorageInfo();
         await this.loadRecentGenerations();
         this.initializeEventListeners();
         this.showMainApp();
@@ -59,6 +62,16 @@ class MagicCanvasPro {
         }
     }
 
+    async loadStorageInfo() {
+        try {
+            const response = await fetch('/api/system_info');
+            const systemInfo = await response.json();
+            this.updateStorageInfo(systemInfo);
+        } catch (error) {
+            console.error('Failed to load storage info:', error);
+        }
+    }
+
     async loadRecentGenerations() {
         try {
             const response = await fetch('/api/recent_generations?limit=5');
@@ -73,14 +86,47 @@ class MagicCanvasPro {
         document.getElementById('totalGenerations').textContent = stats.total_generations || 0;
         document.getElementById('avgGenerationTime').textContent = stats.avg_generation_time ? stats.avg_generation_time + 's' : '0s';
         document.getElementById('recentGenerations').textContent = stats.recent_generations || 0;
+        document.getElementById('totalStorage').textContent = (stats.total_storage_mb || 0) + ' MB';
         
         if (stats.most_used_model) {
-            document.getElementById('popularModel').textContent = this.formatModelName(stats.most_used_model.model);
+            // Update if you have an element for popular model
+            const popularModelElement = document.getElementById('popularModel');
+            if (popularModelElement) {
+                popularModelElement.textContent = this.formatModelName(stats.most_used_model.model);
+            }
         }
+    }
+
+    updateStorageInfo(systemInfo) {
+        const storageInfo = document.getElementById('storageInfo');
+        if (!storageInfo) return;
+
+        const storage = systemInfo.storage_usage || {};
+        
+        storageInfo.innerHTML = `
+            <div class="storage-item">
+                <div class="storage-label">Generated Images</div>
+                <div class="storage-value">${storage.images_mb || 0} MB</div>
+            </div>
+            <div class="storage-item">
+                <div class="storage-label">Exports</div>
+                <div class="storage-value">${storage.exports_mb || 0} MB</div>
+            </div>
+            <div class="storage-item">
+                <div class="storage-label">Metadata</div>
+                <div class="storage-value">${storage.metadata_mb || 0} MB</div>
+            </div>
+            <div class="storage-item">
+                <div class="storage-label">Model Cache</div>
+                <div class="storage-value">${storage.cache_mb || 0} MB</div>
+            </div>
+        `;
     }
 
     updateRecentGenerations(generations) {
         const container = document.getElementById('recentGenerationsList');
+        if (!container) return;
+
         container.innerHTML = '';
 
         if (generations.length === 0) {
@@ -95,7 +141,7 @@ class MagicCanvasPro {
                 <div class="generation-info-small">
                     <div class="generation-prompt">${gen.prompt}</div>
                     <div class="generation-meta">
-                        ${this.formatModelName(gen.model_used)} • ${gen.style} • ${gen.generation_time}s
+                        ${this.formatModelName(gen.model_used)} • ${gen.style} • ${gen.generation_time}s • ${gen.file_size_mb}MB
                     </div>
                 </div>
                 <div class="generation-meta">
@@ -108,6 +154,8 @@ class MagicCanvasPro {
 
     renderModelCards() {
         const modelGrid = document.getElementById('modelGrid');
+        if (!modelGrid) return;
+
         modelGrid.innerHTML = '';
 
         Object.entries(this.models).forEach(([key, model]) => {
@@ -236,7 +284,7 @@ class MagicCanvasPro {
         const progressBar = document.getElementById('downloadProgress');
         const statusText = document.getElementById('downloadStatus');
 
-        progressBar.style.width = `${progress.progress}%`;
+        if (progressBar) progressBar.style.width = `${progress.progress}%`;
         
         const statusMessages = {
             'starting': '🚀 Starting download...',
@@ -246,15 +294,17 @@ class MagicCanvasPro {
             'error': '❌ Download failed'
         };
 
-        statusText.textContent = statusMessages[progress.status] || progress.status;
+        if (statusText) statusText.textContent = statusMessages[progress.status] || progress.status;
     }
 
     showDownloadSection() {
-        document.getElementById('downloadSection').classList.remove('hidden');
+        const section = document.getElementById('downloadSection');
+        if (section) section.classList.remove('hidden');
     }
 
     hideDownloadSection() {
-        document.getElementById('downloadSection').classList.add('hidden');
+        const section = document.getElementById('downloadSection');
+        if (section) section.classList.add('hidden');
     }
 
     selectModel(modelKey) {
@@ -266,6 +316,7 @@ class MagicCanvasPro {
 
     updateGenerateButton() {
         const generateBtn = document.getElementById('generateBtn');
+        if (!generateBtn) return;
         
         if (this.selectedModel) {
             generateBtn.disabled = false;
@@ -281,35 +332,65 @@ class MagicCanvasPro {
         const promptTextarea = document.getElementById('prompt');
         const charCount = document.getElementById('charCount');
         
-        promptTextarea.addEventListener('input', () => {
-            const length = promptTextarea.value.length;
-            charCount.textContent = length;
-            
-            if (length > 450) {
-                charCount.style.color = '#ef4444';
-            } else if (length > 350) {
-                charCount.style.color = '#f59e0b';
-            } else {
-                charCount.style.color = '#cbd5e1';
-            }
-        });
+        if (promptTextarea && charCount) {
+            promptTextarea.addEventListener('input', () => {
+                const length = promptTextarea.value.length;
+                charCount.textContent = length;
+                
+                if (length > 450) {
+                    charCount.style.color = '#ef4444';
+                } else if (length > 350) {
+                    charCount.style.color = '#f59e0b';
+                } else {
+                    charCount.style.color = '#cbd5e1';
+                }
+            });
+        }
+
+        // Quality slider
+        const qualitySlider = document.getElementById('quality');
+        const qualityValue = document.getElementById('qualityValue');
+        
+        if (qualitySlider && qualityValue) {
+            qualitySlider.addEventListener('input', () => {
+                qualityValue.textContent = `${qualitySlider.value}%`;
+            });
+        }
+
+        // Export quality slider
+        const exportQualitySlider = document.getElementById('exportQuality');
+        const exportQualityValue = document.getElementById('exportQualityValue');
+        
+        if (exportQualitySlider && exportQualityValue) {
+            exportQualitySlider.addEventListener('input', () => {
+                exportQualityValue.textContent = `${exportQualitySlider.value}%`;
+            });
+        }
 
         // Generate button
-        document.getElementById('generateBtn').addEventListener('click', () => {
-            this.generateImage();
-        });
+        const generateBtn = document.getElementById('generateBtn');
+        if (generateBtn) {
+            generateBtn.addEventListener('click', () => {
+                this.generateImage();
+            });
+        }
 
         // Enter key to generate
-        promptTextarea.addEventListener('keydown', (e) => {
-            if (e.ctrlKey && e.key === 'Enter') {
-                this.generateImage();
-            }
-        });
+        if (promptTextarea) {
+            promptTextarea.addEventListener('keydown', (e) => {
+                if (e.ctrlKey && e.key === 'Enter') {
+                    this.generateImage();
+                }
+            });
+        }
 
-        // ESC key to close modal
+        // ESC key to close modals
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 this.closeModal();
+                this.closeExportModal();
+                this.closeGalleryModal();
+                this.closeCleanupModal();
             }
         });
     }
@@ -323,6 +404,8 @@ class MagicCanvasPro {
         const prompt = document.getElementById('prompt').value.trim();
         const style = document.getElementById('style').value;
         const negativePrompt = document.getElementById('negativePrompt').value;
+        const format = document.getElementById('format').value;
+        const quality = document.getElementById('quality').value;
 
         if (!prompt) {
             this.showError('Please enter a prompt description');
@@ -345,7 +428,9 @@ class MagicCanvasPro {
                     prompt: prompt,
                     model: this.selectedModel,
                     style: style,
-                    negative_prompt: negativePrompt
+                    negative_prompt: negativePrompt,
+                    format: format,
+                    quality: parseInt(quality)
                 })
             });
 
@@ -359,6 +444,7 @@ class MagicCanvasPro {
                 this.displayResults(data);
                 // Refresh stats and recent generations after successful generation
                 await this.loadStats();
+                await this.loadStorageInfo();
                 await this.loadRecentGenerations();
             } else {
                 throw new Error(data.error || 'Unknown error occurred');
@@ -377,15 +463,19 @@ class MagicCanvasPro {
         const generationInfo = document.getElementById('generationInfo');
         const imagesGrid = document.getElementById('imagesGrid');
 
+        if (!resultsSection || !generationInfo || !imagesGrid) return;
+
         // Show generation info
         generationInfo.innerHTML = `
             <div style="display: grid; gap: 8px;">
                 <div><strong>🎯 Prompt:</strong> ${data.images[0].prompt}</div>
                 <div><strong>🤖 Model:</strong> ${this.formatModelName(data.model_used)}</div>
                 <div><strong>🎨 Style:</strong> ${document.getElementById('style').options[document.getElementById('style').selectedIndex].text}</div>
+                <div><strong>📁 Format:</strong> ${data.images[0].format} (Quality: ${data.images[0].quality}%)</div>
                 <div><strong>⏱️ Time:</strong> ${data.generation_time.toFixed(2)} seconds</div>
                 <div><strong>✨ Enhanced:</strong> "${data.enhanced_prompt}"</div>
                 ${data.record_id ? `<div><strong>📊 Record ID:</strong> #${data.record_id}</div>` : ''}
+                ${data.metadata_saved ? `<div><strong>💾 Metadata:</strong> Saved with image</div>` : ''}
             </div>
         `;
 
@@ -410,13 +500,13 @@ class MagicCanvasPro {
                      onclick="magicCanvas.openModal('${imageData.data}', '${imageData.filename}')">
             </div>
             <div class="image-actions">
-                <div style="font-weight: 500;">✨ Your AI Creation</div>
+                <div style="font-weight: 500;">✨ Your AI Creation (${imageData.format})</div>
                 <div class="action-buttons">
                     <button class="view-btn" onclick="magicCanvas.openModal('${imageData.data}', '${imageData.filename}')">
                         🔍 View Full Size
                     </button>
                     <a href="/api/download/${imageData.filename}" class="download-btn" download="${imageData.filename}">
-                        💾 Download PNG
+                        💾 Download ${imageData.format}
                     </a>
                     <button class="download-btn" onclick="downloadImageDirect('${imageData.data}', '${imageData.filename}')">
                         ⬇️ Save As...
@@ -428,21 +518,287 @@ class MagicCanvasPro {
         return card;
     }
 
+    // Storage and Export Methods
+    async showExportModal() {
+        try {
+            const response = await fetch('/api/stats');
+            const stats = await response.json();
+            
+            const exportInfo = document.getElementById('exportInfo');
+            if (exportInfo) {
+                exportInfo.innerHTML = `
+                    <div class="export-stat">
+                        <span>Total Images:</span>
+                        <span>${stats.total_generations || 0}</span>
+                    </div>
+                    <div class="export-stat">
+                        <span>Estimated Size:</span>
+                        <span>${stats.total_storage_mb || 0} MB</span>
+                    </div>
+                    <div class="export-stat">
+                        <span>Format:</span>
+                        <span id="currentExportFormat">PNG</span>
+                    </div>
+                `;
+            }
+            
+            const modal = document.getElementById('exportModal');
+            modal.classList.add('active');
+        } catch (error) {
+            this.showError('Failed to load export information: ' + error.message);
+        }
+    }
+
+    closeExportModal() {
+        const modal = document.getElementById('exportModal');
+        modal.classList.remove('active');
+    }
+
+    async startExport() {
+        const format = document.getElementById('exportFormat').value;
+        const quality = document.getElementById('exportQuality').value;
+
+        try {
+            const response = await fetch('/api/export', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    format: format,
+                    quality: parseInt(quality),
+                    include_metadata: true
+                })
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || 'Export failed');
+            }
+
+            if (data.success) {
+                this.showSuccess(`Export created successfully! Downloading ${data.export_file}...`);
+                this.closeExportModal();
+                
+                // Download the file
+                window.location.href = `/api/export/${data.export_file}`;
+                
+                // Refresh storage info
+                await this.loadStorageInfo();
+            }
+
+        } catch (error) {
+            this.showError('Export failed: ' + error.message);
+        }
+    }
+
+    async showGallery() {
+        await this.loadGalleryPage(1);
+        const modal = document.getElementById('galleryModal');
+        modal.classList.add('active');
+    }
+
+    closeGalleryModal() {
+        const modal = document.getElementById('galleryModal');
+        modal.classList.remove('active');
+    }
+
+    async loadGalleryPage(page) {
+        try {
+            const response = await fetch(`/api/images?page=${page}&per_page=20`);
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || 'Failed to load gallery');
+            }
+
+            this.currentPage = page;
+            this.totalPages = data.pagination.pages;
+
+            this.updateGalleryPagination();
+            this.renderGallery(data.images);
+        } catch (error) {
+            this.showError('Failed to load gallery: ' + error.message);
+        }
+    }
+
+    updateGalleryPagination() {
+        const paginationInfo = document.getElementById('paginationInfo');
+        const prevButton = document.getElementById('prevPage');
+        const nextButton = document.getElementById('nextPage');
+
+        if (paginationInfo) {
+            paginationInfo.textContent = `Page ${this.currentPage} of ${this.totalPages}`;
+        }
+
+        if (prevButton) {
+            prevButton.disabled = this.currentPage <= 1;
+        }
+
+        if (nextButton) {
+            nextButton.disabled = this.currentPage >= this.totalPages;
+        }
+    }
+
+    renderGallery(images) {
+        const galleryGrid = document.getElementById('galleryGrid');
+        if (!galleryGrid) return;
+
+        galleryGrid.innerHTML = '';
+
+        if (images.length === 0) {
+            galleryGrid.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 40px;">No images found</div>';
+            return;
+        }
+
+        images.forEach(image => {
+            const item = document.createElement('div');
+            item.className = 'gallery-item';
+            item.innerHTML = `
+                <img src="/api/download/${image.filename}" alt="${image.prompt}" class="gallery-thumbnail">
+                <div class="gallery-info">
+                    <div class="gallery-prompt">${image.prompt}</div>
+                    <div class="gallery-meta">
+                        ${this.formatModelName(image.model_used)} • ${image.generation_time}s • ${image.file_size_mb}MB
+                    </div>
+                </div>
+            `;
+            
+            item.addEventListener('click', () => {
+                this.openGalleryImage(image.filename);
+            });
+            
+            galleryGrid.appendChild(item);
+        });
+    }
+
+    async openGalleryImage(filename) {
+        try {
+            const response = await fetch(`/api/images/${filename}/metadata`);
+            if (response.ok) {
+                const metadata = await response.json();
+                this.showImageMetadata(metadata);
+            } else {
+                // Fallback to just showing the image
+                this.openModal(`/api/download/${filename}`, filename);
+            }
+        } catch (error) {
+            this.openModal(`/api/download/${filename}`, filename);
+        }
+    }
+
+    showImageMetadata(metadata) {
+        const modal = document.createElement('div');
+        modal.className = 'modal active';
+        modal.innerHTML = `
+            <div class="modal-content large">
+                <button class="modal-close" onclick="this.parentElement.parentElement.remove()">×</button>
+                <h2>📋 Image Metadata</h2>
+                <div class="metadata-content">
+                    <img src="/api/download/${metadata.filename}" alt="Preview" style="max-width: 100%; border-radius: 10px; margin-bottom: 20px;">
+                    <div style="display: grid; gap: 10px;">
+                        ${Object.entries(metadata).map(([key, value]) => `
+                            <div><strong>${key}:</strong> ${value}</div>
+                        `).join('')}
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <a href="/api/download/${metadata.filename}" class="download-btn" download="${metadata.filename}">
+                        💾 Download Image
+                    </a>
+                    <button class="btn btn-secondary" onclick="this.parentElement.parentElement.parentElement.remove()">
+                        Close
+                    </button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+
+    prevPage() {
+        if (this.currentPage > 1) {
+            this.loadGalleryPage(this.currentPage - 1);
+        }
+    }
+
+    nextPage() {
+        if (this.currentPage < this.totalPages) {
+            this.loadGalleryPage(this.currentPage + 1);
+        }
+    }
+
+    showCleanupModal() {
+        const modal = document.getElementById('cleanupModal');
+        modal.classList.add('active');
+    }
+
+    closeCleanupModal() {
+        const modal = document.getElementById('cleanupModal');
+        modal.classList.remove('active');
+    }
+
+    async startCleanup() {
+        const deleteOldFiles = document.getElementById('deleteOldFiles').checked;
+        const daysOld = document.getElementById('daysOld').value;
+
+        try {
+            const response = await fetch('/api/system/cleanup', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    delete_old: deleteOldFiles,
+                    days_old: parseInt(daysOld)
+                })
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                throw new Error(data.error || 'Cleanup failed');
+            }
+
+            if (data.success) {
+                const report = data.cleanup_report;
+                this.showSuccess(`Cleanup completed! Deleted ${report.deleted_files} files, freed ${report.freed_space_mb} MB`);
+                this.closeCleanupModal();
+                
+                // Refresh storage info
+                await this.loadStorageInfo();
+                await this.loadStats();
+                
+                if (report.errors.length > 0) {
+                    console.warn('Cleanup warnings:', report.errors);
+                }
+            }
+
+        } catch (error) {
+            this.showError('Cleanup failed: ' + error.message);
+        }
+    }
+
+    // Existing methods
     openModal(imageSrc, filename) {
         this.currentModalImage = { src: imageSrc, filename: filename };
         const modal = document.getElementById('imageModal');
         const modalImage = document.getElementById('modalImage');
         
-        modalImage.src = imageSrc;
-        modal.classList.add('active');
-        document.body.style.overflow = 'hidden';
+        if (modal && modalImage) {
+            modalImage.src = imageSrc;
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
     }
 
     closeModal() {
         const modal = document.getElementById('imageModal');
-        modal.classList.remove('active');
-        document.body.style.overflow = 'auto';
-        this.currentModalImage = null;
+        if (modal) {
+            modal.classList.remove('active');
+            document.body.style.overflow = 'auto';
+            this.currentModalImage = null;
+        }
     }
 
     downloadModalImage() {
@@ -455,9 +811,13 @@ class MagicCanvasPro {
         const errorSection = document.getElementById('errorSection');
         const errorMessage = document.getElementById('errorMessage');
         
-        errorMessage.textContent = message;
-        errorSection.classList.remove('hidden');
-        errorSection.scrollIntoView({ behavior: 'smooth' });
+        if (errorSection && errorMessage) {
+            errorMessage.textContent = message;
+            errorSection.classList.remove('hidden');
+            errorSection.scrollIntoView({ behavior: 'smooth' });
+        } else {
+            alert('Error: ' + message);
+        }
     }
 
     showSuccess(message) {
@@ -484,11 +844,13 @@ class MagicCanvasPro {
     }
 
     hideError() {
-        document.getElementById('errorSection').classList.add('hidden');
+        const errorSection = document.getElementById('errorSection');
+        if (errorSection) errorSection.classList.add('hidden');
     }
 
     hideResults() {
-        document.getElementById('resultsSection').classList.add('hidden');
+        const resultsSection = document.getElementById('resultsSection');
+        if (resultsSection) resultsSection.classList.add('hidden');
     }
 }
 
@@ -506,15 +868,37 @@ function closeModal() {
     magicCanvas.closeModal();
 }
 
+function closeExportModal() {
+    magicCanvas.closeExportModal();
+}
+
+function closeGalleryModal() {
+    magicCanvas.closeGalleryModal();
+}
+
+function closeCleanupModal() {
+    magicCanvas.closeCleanupModal();
+}
+
 function downloadModalImage() {
     magicCanvas.downloadModalImage();
 }
 
-// Close modal when clicking outside
-document.getElementById('imageModal').addEventListener('click', function(e) {
-    if (e.target === this) {
-        closeModal();
-    }
+// Close modals when clicking outside
+document.addEventListener('click', function(e) {
+    const modals = ['imageModal', 'exportModal', 'galleryModal', 'cleanupModal'];
+    
+    modals.forEach(modalId => {
+        const modal = document.getElementById(modalId);
+        if (modal && e.target === modal) {
+            switch(modalId) {
+                case 'imageModal': closeModal(); break;
+                case 'exportModal': closeExportModal(); break;
+                case 'galleryModal': closeGalleryModal(); break;
+                case 'cleanupModal': closeCleanupModal(); break;
+            }
+        }
+    });
 });
 
 // Initialize the application
